@@ -18,9 +18,9 @@ static const char* const kAllowedSSIDs[] = {
 //MQTT
 #define MQTT_HOST        "test.mosquitto.org"
 #define MQTT_PORT        1883
-#define MQTT_CLIENT_ID   "esp32-himara-01"
-#define MQTT_SUB_TOPIC   "himara/esp32-01/#"
-#define MQTT_PUB_TOPIC   "himara/esp32-01/status"
+#define MQTT_CLIENT_ID   "esp32-device-01"
+#define MQTT_SUB_TOPIC   "esp32/device-01/#"
+#define MQTT_PUB_TOPIC   "esp32/device-01/status"
 #define MQTT_QOS         2
 #define MQTT_KEEPALIVE   30
 

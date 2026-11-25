@@ -140,17 +140,8 @@ void onMqttConnect(esp_mqtt_client_handle_t client)
     }
 }
 
-// Matches the exact library macro signature perfectly
-esp_err_t handleMQTT(esp_mqtt_event_handle_t event) 
+void handleMQTT(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
+    auto *event = static_cast<esp_mqtt_event_handle_t>(event_data);
     MqttManager::instance().raw().onEventCallback(event);
-    return ESP_OK;
 }
-
-//old version of the callback
-
-// void handleMQTT(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) 
-// {
-//     auto *event = static_cast<esp_mqtt_event_handle_t>(event_data);
-//     MqttManager::instance().raw().onEventCallback(event);
-// }

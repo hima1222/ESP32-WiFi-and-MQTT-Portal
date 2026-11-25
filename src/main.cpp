@@ -4,23 +4,25 @@
 #include "ConfigStore.h"
 #include "NetworkCatalog.h"
 #include "MqttManager.h"
+#include "WiFiPortal.h"
+#include "MqttPortal.h"
 
 constexpr uint32_t kPublishInterval = 5000; //ESP32 will publish MQTT status every 5 seconds
 
 unsigned long lastPublish = 0;
+WiFiPortal wifiPortal;
+MqttPortal mqttPortal;
+bool wifiPortalRunning = false;
+bool mqttPortalRunning = false;
 
-void connectWiFi()
+bool connectWiFi()
 {
     WifiCredentials creds = ConfigStore::loadWifi();
 
     if (!creds.valid)
     {
-        Serial.println("[WiFi] No stored WiFi, using default");
-
-        creds.ssid = NetworkCatalog::defaultSSID();
-        creds.password = NetworkCatalog::defaultPassword();
-
-        ConfigStore::saveWifi(creds.ssid, creds.password);
+        Serial.println("[WiFi] No stored WiFi credentials");
+        return false;
     }
 
     WiFi.mode(WIFI_STA); //esp32 station mode
@@ -28,14 +30,42 @@ void connectWiFi()
 
     Serial.print("[WiFi] Connecting");
 
-    while (WiFi.status() != WL_CONNECTED)
+    for (uint8_t attempt = 0;
+         attempt < 40 && WiFi.status() != WL_CONNECTED;
+         attempt++)
     {
         delay(500);
         Serial.print(".");
     }
 
+    if (WiFi.status() != WL_CONNECTED)
+    {
+        Serial.println("\n[WiFi] Connection failed");
+        return false;
+    }
+
     Serial.println("\n[WiFi] Connected");
     Serial.println(WiFi.localIP());
+    return true;
+}
+
+void resetNvsIfBootHeld()
+{
+    pinMode(GPIO_NUM_0, INPUT_PULLUP);
+
+    if (digitalRead(GPIO_NUM_0) == LOW)
+    {
+        Serial.println("[BOOT] Hold detected, waiting 3 seconds...");
+        delay(3000);
+
+        if (digitalRead(GPIO_NUM_0) == LOW)
+        {
+            Serial.println("[CONFIG] Clearing WiFi and MQTT settings");
+            ConfigStore::clearAll();
+            delay(500);
+            ESP.restart();
+        }
+    }
 }
 
 void setup()
@@ -43,26 +73,26 @@ void setup()
     Serial.begin(115200);
     delay(500);
 
-    //ConfigStore::clearAll(); // Clear all stored configurations for testing purposes
-    
-    connectWiFi();
+    resetNvsIfBootHeld();
 
-    // if (!ConfigStore::hasMqttSettings())
-    // {
-    //     Serial.println("[MQTT] No config found. Waiting for MQTT config...");
-    //     return;
-    // }
+    if (!ConfigStore::hasWifiCredentials())
+    {
+        wifiPortalRunning = true;
+        wifiPortal.begin();
+        return;
+    }
 
-    //If no MQTT configuration exists in flash memory, create a default one and save it
+    if (!connectWiFi())
+    {
+        wifiPortalRunning = true;
+        wifiPortal.begin();
+        return;
+    }
+
     if (!ConfigStore::hasMqttSettings()) {
-        MqttSettings defaultMqtt;
-        defaultMqtt.host = "test.mosquitto.org";
-        defaultMqtt.port = 1883;
-        defaultMqtt.clientId = "esp32-himara-01";
-        defaultMqtt.subscribeTopic = "himara/esp32-01/#"; // Listens to all configuration triggers
-        defaultMqtt.publishTopic = "himara/esp32-01/status"; // Pushes metrics here
-        defaultMqtt.qos = 2;
-        ConfigStore::saveMqtt(defaultMqtt);
+        mqttPortalRunning = true;
+        mqttPortal.begin();
+        return;
     }
 
     auto mqtt = ConfigStore::loadMqtt();
@@ -71,6 +101,18 @@ void setup()
 
 void loop()
 {
+    if (wifiPortalRunning)
+    {
+        wifiPortal.handle();
+        return;
+    }
+
+    if (mqttPortalRunning)
+    {
+        mqttPortal.handle();
+        return;
+    }
+
     auto& mqtt = MqttManager::instance();
 
     if (mqtt.isConnected() &&

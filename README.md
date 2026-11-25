@@ -1,95 +1,139 @@
-# ESP32 WiFi Portal + MQTT Broker Portal (QoS 2)
+# ESP32 WiFi Portal + MQTT Broker Portal (QoS 0/1/2)
 
 A modular PlatformIO/Arduino project for ESP32 with two onboarding web portals:
 
-1. **WiFi portal** — SoftAP + captive portal, shown when no WiFi credentials are
-   stored. You connect a phone/laptop to the ESP32's own AP and type in your
-   home WiFi SSID/password.
-2. **MQTT broker portal** — a normal web page served on the device's LAN IP
-   (once WiFi is up), used to enter the MQTT broker host, port, credentials,
-   topics, and QoS level (0/1/2).
+1. **WiFi portal** - A SoftAP and captive portal starts when no WiFi credentials
+   are stored or when the saved network cannot be reached. Connect to the
+   ESP32 network and enter the home WiFi SSID and password.
+2. **MQTT broker portal** - A normal web page is served on the ESP32's LAN IP
+   after WiFi connects. It collects the broker host, port, optional credentials,
+   topics, and QoS level.
 
-Both portals just write to flash (NVS via `Preferences`) and reboot. After both
-are configured, the device connects to the broker and publishes/subscribes at
-**genuine QoS 2**.
+Both portals write settings to flash (NVS via `Preferences`) and reboot the
+device after submission. The ESP32 then connects to WiFi and MQTT and publishes
+or subscribes at the configured QoS.
 
-## Why this MQTT library, not PubSubClient
+## MQTT QoS support
 
-`PubSubClient` — the library almost every ESP32 MQTT tutorial uses — can only
-**publish at QoS 0**, and can only **subscribe at QoS 0 or 1**. It has no real
-QoS 2 implementation (no PUBREC/PUBREL/PUBCOMP handshake), regardless of what
-number you pass it.
+This project uses `cyijun/ESP32MQTTClient`, a wrapper around Espressif's native
+ESP-IDF `esp-mqtt` component. It supports genuine QoS 0, 1, and 2:
 
-Real QoS 2 on ESP32 exists in Espressif's own `esp-mqtt` component (the native
-ESP-IDF MQTT client), which implements all three QoS levels properly. This
-project uses [`cyijun/ESP32MQTTClient`](https://github.com/cyijun/ESP32MQTTClient),
-a small Arduino-friendly wrapper around that exact component — so you get true
-QoS 2 while staying inside a normal `framework = arduino` PlatformIO project
-(no need for the more fragile combined `arduino + espidf` build).
+| QoS | Delivery behavior |
+| --- | --- |
+| 0 | At most once |
+| 1 | At least once |
+| 2 | Exactly once, with PUBREC/PUBREL/PUBCOMP handshaking |
+
+The PubSubClient library is not used because it does not implement the QoS 2
+handshake.
 
 ## Project layout
 
-```
+```text
 platformio.ini
 include/
-  Config.h          - WifiCredentials / MqttSettings structs
+  Config.h             - WifiCredentials and MqttSettings structures
 src/
-  ConfigStore.h/.cpp - NVS (Preferences) read/write for both settings
-  WiFiPortal.h/.cpp   - SoftAP + captive portal for WiFi setup
-  MqttPortal.h/.cpp   - LAN web form for broker host/port/topics/QoS
-  MqttManager.h/.cpp  - wraps ESP32MQTTClient, real QoS 0/1/2 pub/sub
-  main.cpp            - boot state machine tying it all together
+  ConfigStore.h/.cpp   - NVS storage for WiFi and MQTT settings
+  WiFiPortal.h/.cpp    - SoftAP and captive WiFi setup portal
+  MqttPortal.h/.cpp    - LAN MQTT broker configuration portal
+  NetworkCatalog.h/.cpp- allowed WiFi networks and default fallback network
+  MqttManager.h/.cpp   - MQTT connection, QoS publish/subscribe, and callbacks
+  main.cpp             - boot state machine
 ```
 
 ## Boot flow
 
-```
+```text
 power on
-  -> hold BOOT (GPIO0) 3s? -> wipe NVS, restart
-  -> WiFi creds saved & connect OK?
+  -> hold BOOT (GPIO0) for 3 seconds -> wipe NVS and restart
+  -> WiFi credentials stored?
        no  -> start WiFi portal (AP "ESP32-Setup", http://192.168.4.1)
-              user submits form -> save -> restart
-       yes -> continue
-  -> MQTT broker settings saved?
-       no  -> start MQTT portal on the device's LAN IP (see Serial monitor)
-              user submits form -> save -> restart
-       yes -> MqttManager.begin() -> connect, subscribe, publish at QoS
+              submit form -> save credentials -> restart
+       yes -> connect to WiFi
+              if connection fails -> start WiFi portal
+  -> MQTT broker settings stored?
+       no  -> start MQTT portal on the ESP32 LAN IP
+              submit form -> save settings -> restart
+       yes -> MqttManager.begin() -> connect, subscribe, and publish
 ```
 
-## Build & flash
+## Default MQTT settings
 
-```bash
+| Setting | Default |
+| --- | --- |
+| Broker | `test.mosquitto.org` |
+| Port | `1883` |
+| Client ID | `esp32-device-01` |
+| Subscribe topic | `esp32/device-01/#` |
+| Publish topic | `esp32/device-01/status` |
+| QoS | `2` |
+
+WiFi remote configuration topic:
+
+```text
+esp32/device-01/config/wifi
+```
+
+MQTT remote restart topic:
+
+```text
+esp32/device-01/config/mqtt
+```
+
+WiFi configuration payload:
+
+```json
+{
+  "ssid": "MyWiFi",
+  "password": "MyPassword"
+}
+```
+
+Remote reboot payload:
+
+```json
+{
+  "command": "REBOOT"
+}
+```
+
+## Status payload
+
+The ESP32 publishes every five seconds to `esp32/device-01/status`:
+
+```json
+{
+  "uptime": 12345,
+  "rssi": -45
+}
+```
+
+- `uptime` is the ESP32 uptime in milliseconds.
+- `rssi` is the current WiFi received signal strength.
+
+## Build and flash
+
+```powershell
 pio run -e esp32dev -t upload
 pio device monitor -b 115200
 ```
 
-Adjust `board` in `platformio.ini` if you're not using a generic ESP32 dev
-board (e.g. `esp32-s3-devkitc-1`, `esp32-c3-devkitm-1`).
+Adjust `board` in `platformio.ini` for your ESP32 board, such as
+`esp32-s3-devkitc-1` or `esp32-c3-devkitm-1`.
 
-## First-time setup on the device
+## First-time setup
 
-1. Flash and power up. Connect your phone to WiFi network **ESP32-Setup**
-   (open the captive portal page, or browse to `192.168.4.1`).
-2. Enter your home WiFi SSID/password, submit. The device reboots and joins
-   that network.
-3. Watch the Serial monitor for the device's new IP address, e.g.
-   `192.168.1.42`. Browse to `http://192.168.1.42` from a device on the same
-   network.
-4. Enter your MQTT broker host/IP, port, optional credentials, the
-   subscribe/publish topics, and QoS (defaults to 2). Submit. The device
-   reboots and connects to the broker.
-5. From then on it auto-reconnects to both WiFi and MQTT on every boot.
+1. Flash the firmware and power on the ESP32.
+2. Connect a phone or laptop to WiFi network `ESP32-Setup`.
+3. Open the captive portal, or browse to `http://192.168.4.1`.
+4. Enter the home WiFi SSID and password and submit.
+5. The ESP32 reboots and connects to the WiFi network.
+6. Watch the Serial monitor for the ESP32's LAN IP address.
+7. Browse to `http://<ESP32-LAN-IP>` from a device on the same network.
+8. Enter the MQTT broker host, port, optional credentials, subscribe/publish
+   topics, and QoS (0, 1, or 2).
+9. Submit to save the MQTT settings. The ESP32 reboots and connects to the broker.
 
-To reconfigure later: hold the BOOT button for ~3 seconds at power-on to wipe
-both WiFi and MQTT settings and start over from step 1.
-
-## Customizing
-
-- `MqttManager::handleIncomingMessage()` in `MqttManager.cpp` is where you'd
-  parse incoming command payloads (currently just logs them).
-- `main.cpp`'s `loop()` builds a tiny JSON status payload every 5 seconds and
-  publishes it via `MqttManager::publishStatus()` at the configured QoS — swap
-  that for your actual sensor data.
-- TLS (port 8883) is supported by the underlying library
-  (`ESP32MQTTClient::setCaCert()`) if you need an encrypted broker connection;
-  it's omitted here to keep the example focused.
+To reconfigure later, hold the BOOT button for approximately three seconds
+during startup to erase all WiFi and MQTT settings.

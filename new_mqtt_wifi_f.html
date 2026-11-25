@@ -412,29 +412,56 @@
   <div class="login-panel">
     <h1>ESP32 WiFi Config</h1>
 
-    <label>Broker URL</label>
-    <input type="text" id="wifiBroker" value="wss://test.mosquitto.org:8081/mqtt">
-
-    <label>Config Topic</label>
-    <input type="text" id="wifiTopic" value="himara/esp32-01/config/wifi">
-
     <label>Select WiFi</label>
     <select id="wifiList">
-      <option>Himaa</option>
-      <option>Dialog 4G 101</option>
-      <option>Office_WiFi</option>
-      <option>Factory_WiFi</option>
-      <option>Lab_WiFi</option>
+      <option value="">Scanning networks...</option>
     </select>
 
     <label>Password</label>
     <input type="password" id="password" placeholder="Enter password">
 
-    <button onclick="connectWifi()">Send to ESP32</button>
+    <button onclick="connectWifi()">Save and Connect</button>
 
     <div class="login-status" id="wifiStatus"></div>
 
-    <button class="logout-btn" style="margin-top:14px;position:static;width:100%;" onclick="showDashboard()">Skip to MQTT Console &rarr;</button>
+  </div>
+</div>
+
+<!-- ============ MQTT CONFIGURATION VIEW ============ -->
+<div id="mqttConfigView" style="display:none;position:relative;z-index:1;min-height:100vh;align-items:center;justify-content:center;">
+  <div class="login-panel">
+    <h1>MQTT Broker Configuration</h1>
+
+    <label>Broker Host</label>
+    <input type="text" id="mqttHost" value="test.mosquitto.org">
+
+    <label>Port</label>
+    <input type="number" id="mqttPort" value="1883">
+
+    <label>Client ID</label>
+    <input type="text" id="mqttClientId" value="esp32-device-01">
+
+    <label>Username (optional)</label>
+    <input type="text" id="mqttUsername">
+
+    <label>Password (optional)</label>
+    <input type="password" id="mqttPassword">
+
+    <label>Subscribe Topic</label>
+    <input type="text" id="mqttSubscribeTopic" value="esp32/device-01/#">
+
+    <label>Publish Topic</label>
+    <input type="text" id="mqttPublishTopic" value="esp32/device-01/status">
+
+    <label>QoS</label>
+    <select id="mqttQos">
+      <option value="0">0 - At most once</option>
+      <option value="1">1 - At least once</option>
+      <option value="2" selected>2 - Exactly once</option>
+    </select>
+
+    <button onclick="saveMqtt()">Save and Connect</button>
+    <div class="login-status" id="mqttStatus"></div>
   </div>
 </div>
 
@@ -533,47 +560,87 @@ function showDashboard(){
 }
 function showWifiLogin(){
   document.getElementById("dashboardView").style.display = "none";
+  document.getElementById("mqttConfigView").style.display = "none";
   document.getElementById("wifiView").style.display = "flex";
 }
 
-// ============ WIFI CONFIG (published to ESP32 over MQTT) ============
-function connectWifi(){
+// ============ WIFI CONFIG ============
+async function loadWifiNetworks(){
+  try{
+    const response = await fetch("/networks");
+    const networks = await response.json();
+    const select = document.getElementById("wifiList");
+    select.innerHTML = "";
+
+    if(networks.length === 0){
+      select.innerHTML = '<option value="">No networks found</option>';
+      return;
+    }
+
+    networks.forEach(function(ssid){
+      const option = document.createElement("option");
+      option.value = ssid;
+      option.textContent = ssid;
+      select.appendChild(option);
+    });
+  }catch(err){
+    document.getElementById("wifiStatus").textContent = "Unable to scan WiFi networks.";
+  }
+}
+
+async function connectWifi(){
   const ssid = document.getElementById("wifiList").value;
   const pass = document.getElementById("password").value;
-  const brokerRaw = document.getElementById("wifiBroker").value.trim();
-  const topic = document.getElementById("wifiTopic").value.trim();
   const status = document.getElementById("wifiStatus");
 
-  if(!pass){
-    status.textContent = "Enter password first.";
-    status.className = "login-status";
-    return;
-  }
-  if(!brokerRaw || !topic){
-    status.textContent = "Enter broker URL and topic first.";
+  if(!ssid){
+    status.textContent = "Select a WiFi network first.";
     status.className = "login-status";
     return;
   }
 
-  status.textContent = "Publishing credentials for " + ssid + "...";
+  status.textContent = "Saving WiFi credentials...";
   status.className = "login-status";
 
-  const brokerUrl = normalizeBroker(brokerRaw);
-  const client = mqtt.connect(brokerUrl);
+  const body = new URLSearchParams();
+  body.set("ssid", ssid);
+  body.set("password", pass);
 
-  client.on('connect', function () {
-    const payload = JSON.stringify({ ssid: ssid, password: pass });
-    client.publish(topic, payload);
+  try{
+    const response = await fetch("/save-wifi", {method:"POST", body:body});
+    if(!response.ok) throw new Error(await response.text());
     status.className = "login-status ok";
-    status.textContent = "Sent to ESP32. Watch its Serial monitor — it will reboot onto the new network if the SSID is on its allow-list.";
-    client.end();
-  });
-
-  client.on('error', function (err) {
+    status.textContent = "Saved. The ESP32 is rebooting and connecting to WiFi...";
+  }catch(err){
     status.className = "login-status";
-    status.textContent = "Publish error: " + err.message;
-    client.end();
-  });
+    status.textContent = "Save error: " + err.message;
+  }
+}
+
+async function saveMqtt(){
+  const status = document.getElementById("mqttStatus");
+  const body = new URLSearchParams();
+  body.set("host", document.getElementById("mqttHost").value.trim());
+  body.set("port", document.getElementById("mqttPort").value.trim());
+  body.set("client_id", document.getElementById("mqttClientId").value.trim());
+  body.set("username", document.getElementById("mqttUsername").value);
+  body.set("password", document.getElementById("mqttPassword").value);
+  body.set("subscribe_topic", document.getElementById("mqttSubscribeTopic").value.trim());
+  body.set("publish_topic", document.getElementById("mqttPublishTopic").value.trim());
+  body.set("qos", document.getElementById("mqttQos").value);
+
+  status.textContent = "Saving MQTT settings...";
+  status.className = "login-status";
+
+  try{
+    const response = await fetch("/save-mqtt", {method:"POST", body:body});
+    if(!response.ok) throw new Error(await response.text());
+    status.textContent = "Saved. The ESP32 is rebooting and connecting to MQTT...";
+    status.className = "login-status ok";
+  }catch(err){
+    status.textContent = "Save error: " + err.message;
+    status.className = "login-status";
+  }
 }
 
 function logoutWifi(){
@@ -723,6 +790,15 @@ function stopSubscribe() {
         subClient = null;
     }
 }
+
+window.addEventListener("DOMContentLoaded", function(){
+  if(window.location.pathname === "/mqtt"){
+    document.getElementById("wifiView").style.display = "none";
+    document.getElementById("mqttConfigView").style.display = "flex";
+  }else if(window.location.pathname === "/"){
+    loadWifiNetworks();
+  }
+});
 </script>
 
 </body>
